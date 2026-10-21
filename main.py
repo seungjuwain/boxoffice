@@ -43,7 +43,7 @@ except Exception:
     st.markdown(
         "Streamlit Cloud의 **Settings → Secrets**에 `KOBIS_KEY`가 등록되어 있는지 확인하세요."
     )
-    st.code('KOBIS_KEY = "63540aed0371c3339197b16ae45ae71b"', language="toml")
+    st.code('KOBIS_KEY = "발급받은 인증키"', language="toml")
     st.stop()
 
 
