@@ -11,7 +11,7 @@ st.set_page_config(
 )
 
 # ==========================================
-# API 설정
+# API 주소
 # ==========================================
 BASE_URL = (
     "https://www.kobis.or.kr/kobisopenapi/webservice/rest/"
@@ -21,12 +21,15 @@ MOVIE_INFO_URL = BASE_URL + "movie/searchMovieInfo.json"
 MOVIE_SEARCH_URL = BASE_URL + "movie/searchMovieList.json"
 TMDB_SEARCH_URL = "https://api.themoviedb.org/3/search/movie"
 
+# ==========================================
+# 한국 시간 기준 날짜
+# ==========================================
 KST = datetime.timezone(datetime.timedelta(hours=9))
 today_kst = datetime.datetime.now(KST).date()
 yesterday = today_kst - datetime.timedelta(days=1)
 
 # ==========================================
-# API 호출 함수
+# API 함수
 # ==========================================
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_boxoffice(date_text, api_key):
@@ -39,7 +42,7 @@ def fetch_boxoffice(date_text, api_key):
     data = response.json()
 
     if not isinstance(data, dict):
-        raise ValueError("올바르지 않은 KOBIS 응답입니다.")
+        raise ValueError("KOBIS 응답 형식이 올바르지 않습니다.")
 
     if "faultInfo" in data:
         raise ValueError(str(data["faultInfo"]))
@@ -68,24 +71,22 @@ def find_movie_code(movie_name, open_date, api_key):
 
     movies = data.get("movieListResult", {}).get("movieList", [])
 
-    # 제목과 개봉일이 모두 일치하는 영화 우선
-    matches = [
+    exact_matches = [
         movie for movie in movies
         if movie.get("movieNm") == movie_name
         and movie.get("openDt", "") == open_date
     ]
 
-    if matches:
-        return matches[0].get("movieCd")
+    if exact_matches:
+        return exact_matches[0].get("movieCd")
 
-    # 정확한 제목의 결과가 하나뿐일 때만 사용
-    matches = [
+    title_matches = [
         movie for movie in movies
         if movie.get("movieNm") == movie_name
     ]
 
-    if len(matches) == 1:
-        return matches[0].get("movieCd")
+    if len(title_matches) == 1:
+        return title_matches[0].get("movieCd")
 
     return None
 
@@ -108,35 +109,65 @@ def fetch_movie_info(movie_code, api_key):
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_movie_poster(movie_name, release_year, tmdb_key):
+    """TMDB에서 포스터를 검색하고 오류를 구분합니다."""
     if not tmdb_key:
-        return None
+        return None, "TMDB_KEY가 설정되지 않았습니다."
+
+    headers = {
+        "Authorization": f"Bearer {tmdb_key}",
+        "accept": "application/json",
+    }
+
+    params = {
+        "query": movie_name,
+        "language": "ko-KR",
+        "include_adult": "false",
+    }
+
+    if release_year and release_year.isdigit():
+        params["year"] = release_year
 
     response = requests.get(
         TMDB_SEARCH_URL,
-        params={
-            "query": movie_name,
-            "language": "ko-KR",
-            "year": release_year or None,
-        },
-        headers={
-            "Authorization": f"Bearer {tmdb_key}",
-            "accept": "application/json",
-        },
+        params=params,
+        headers=headers,
         timeout=20,
     )
+
+    if response.status_code in (401, 403):
+        return None, (
+            "TMDB 인증에 실패했습니다. "
+            "API Read Access Token이 맞는지 확인하세요."
+        )
+
     response.raise_for_status()
     results = response.json().get("results", [])
 
-    # 포스터가 있는 첫 번째 검색 결과
-    movie = next(
-        (item for item in results if item.get("poster_path")),
+    # 포스터가 있는 결과를 우선 선택합니다.
+    poster_results = [
+        item for item in results
+        if item.get("poster_path")
+    ]
+
+    if not poster_results:
+        return None, "TMDB에서 포스터를 찾지 못했습니다."
+
+    # 제목과 연도가 일치하는 결과를 우선합니다.
+    chosen = poster_results[0]
+
+    if release_year:
+        for item in poster_results:
+            release_date = item.get("release_date", "")
+            if release_date.startswith(release_year):
+                chosen = item
+                break
+
+    poster_path = chosen.get("poster_path")
+
+    return (
+        "https://image.tmdb.org/t/p/w500" + poster_path,
         None,
     )
-
-    if not movie:
-        return None
-
-    return "https://image.tmdb.org/t/p/w500" + movie["poster_path"]
 
 
 def format_release_date(value):
@@ -148,14 +179,6 @@ def format_release_date(value):
     return value or "정보 없음"
 
 
-def format_rank_change(value):
-    if value > 0:
-        return f"↑ {value}"
-    if value < 0:
-        return f"↓ {abs(value)}"
-    return "— 0"
-
-
 def join_names(items, key):
     return ", ".join(
         item.get(key, "")
@@ -164,29 +187,46 @@ def join_names(items, key):
     ) or "정보 없음"
 
 
+def format_rank_change(value):
+    if value > 0:
+        return f"↑ {value}"
+    if value < 0:
+        return f"↓ {abs(value)}"
+    return "— 0"
+
+
 # ==========================================
-# Secrets 확인
+# Secrets 읽기
 # ==========================================
 try:
     API_KEY = str(st.secrets["KOBIS_KEY"]).strip()
 except Exception:
-    st.error("KOBIS 인증키가 없습니다.")
+    st.error("KOBIS_KEY를 찾을 수 없습니다.")
     st.info(
-        "Streamlit Cloud → Settings → Secrets에서 "
+        "Streamlit Cloud의 Settings → Secrets에서 "
         "KOBIS_KEY를 등록하세요."
     )
-    st.code('KOBIS_KEY = "발급받은_KOBIS_인증키"', language="toml")
+    st.code('KOBIS_KEY = "실제_KOBIS_인증키"', language="toml")
     st.stop()
 
-TMDB_KEY = str(st.secrets.get("TMDB_KEY", "")).strip()
+# TMDB_KEY는 선택 사항입니다.
+# 앞뒤 공백과 줄바꿈을 제거합니다.
+try:
+    TMDB_KEY = str(st.secrets.get("TMDB_KEY", "")).strip()
+except Exception:
+    TMDB_KEY = ""
+
+# 키 자체는 화면에 출력하지 않습니다.
+with st.sidebar:
+    st.caption("API 설정 상태")
+    st.write("KOBIS 인증키:", "설정됨" if API_KEY else "없음")
+    st.write("TMDB 인증키:", "설정됨" if TMDB_KEY else "없음")
 
 # ==========================================
 # 날짜 선택
 # ==========================================
 st.title("🎬 일별 박스오피스")
-st.caption(
-    "날짜를 선택하고 영화명을 누르면 영화 상세 정보를 확인할 수 있습니다."
-)
+st.caption("영화명을 클릭하면 상세 정보 화면으로 이동합니다.")
 
 selected_date = st.date_input(
     "조회 날짜",
@@ -200,16 +240,13 @@ target_dt = selected_date.strftime("%Y%m%d")
 display_date = selected_date.strftime("%Y년 %m월 %d일")
 
 # ==========================================
-# 박스오피스 데이터 가져오기
+# 박스오피스 데이터
 # ==========================================
 try:
     with st.spinner("박스오피스를 불러오는 중입니다..."):
         movies = fetch_boxoffice(target_dt, API_KEY)
-except requests.exceptions.Timeout:
-    st.error("KOBIS 서버 응답 시간이 초과되었습니다.")
-    st.stop()
-except requests.exceptions.RequestException as error:
-    st.error(f"KOBIS 서버 연결 오류: {error}")
+except requests.exceptions.RequestException:
+    st.error("KOBIS 서버에 연결할 수 없습니다. 잠시 후 다시 시도하세요.")
     st.stop()
 except ValueError as error:
     st.error(f"KOBIS API 오류: {error}")
@@ -231,12 +268,18 @@ if missing:
     st.error("필요한 데이터가 없습니다: " + ", ".join(missing))
     st.stop()
 
-# 숫자 데이터 정리
 for col in ["rank", "rankInten", "audiCnt", "audiAcc", "scrnCnt"]:
-    df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+    df[col] = pd.to_numeric(
+        df[col], errors="coerce"
+    ).fillna(0).astype(int)
 
 df["movieNm"] = df["movieNm"].fillna("영화명 없음").astype(str)
 df["openDt"] = df["openDt"].fillna("").astype(str)
+
+# 영화 코드가 있으면 상세 조회에 재사용합니다.
+if "movieCd" not in df.columns:
+    df["movieCd"] = ""
+
 df["표시 영화명"] = df.apply(
     lambda row: (
         f"{row['movieNm']} 🏆"
@@ -245,6 +288,7 @@ df["표시 영화명"] = df.apply(
     ),
     axis=1,
 )
+
 df["순위 변동"] = df["rankInten"].map(format_rank_change)
 df = df.sort_values("rank").reset_index(drop=True)
 
@@ -275,16 +319,11 @@ if selected_movie is not None:
         with st.spinner("영화 정보를 불러오는 중입니다..."):
             if not movie_code:
                 movie_code = find_movie_code(
-                    movie_name,
-                    open_date,
-                    API_KEY,
+                    movie_name, open_date, API_KEY
                 )
 
             if not movie_code:
-                st.warning(
-                    "일치하는 영화 코드를 찾지 못했습니다. "
-                    "KOBIS 영화 검색 결과를 확인해 주세요."
-                )
+                st.warning("KOBIS에서 영화 코드를 찾지 못했습니다.")
                 st.stop()
 
             info = fetch_movie_info(movie_code, API_KEY)
@@ -308,21 +347,34 @@ if selected_movie is not None:
             raw_date = info.get("openDt") or open_date
             release_date = format_release_date(raw_date)
 
-            # 포스터 조회는 선택 사항
             poster_url = None
+            poster_error = None
 
+            # TMDB 키가 있는 경우에만 포스터 검색
             if TMDB_KEY:
                 try:
-                    poster_url = fetch_movie_poster(
+                    poster_url, poster_error = fetch_movie_poster(
                         info.get("movieNm") or movie_name,
                         raw_date[:4] if len(raw_date) >= 4 else "",
                         TMDB_KEY,
                     )
-                except (
-                    requests.exceptions.RequestException,
-                    ValueError,
-                ):
-                    poster_url = None
+                except requests.exceptions.Timeout:
+                    poster_error = "TMDB 응답 시간이 초과되었습니다."
+                except requests.exceptions.HTTPError as error:
+                    status = (
+                        error.response.status_code
+                        if error.response is not None
+                        else "알 수 없음"
+                    )
+                    poster_error = f"TMDB HTTP 오류: {status}"
+                except requests.exceptions.RequestException:
+                    poster_error = "TMDB 서버에 연결할 수 없습니다."
+                except (ValueError, KeyError):
+                    poster_error = "TMDB 응답을 처리하지 못했습니다."
+            else:
+                poster_error = (
+                    "TMDB_KEY가 Secrets에서 확인되지 않았습니다."
+                )
 
         poster_col, detail_col = st.columns([1, 2])
 
@@ -330,10 +382,8 @@ if selected_movie is not None:
             if poster_url:
                 st.image(poster_url, use_container_width=True)
             else:
-                st.info(
-                    "포스터가 없습니다. "
-                    "TMDB_KEY 등록 여부를 확인해 주세요."
-                )
+                st.info("🎞️ 포스터를 표시할 수 없습니다.")
+                st.caption(poster_error or "포스터가 없습니다.")
 
         with detail_col:
             st.subheader(info.get("movieNm") or movie_name)
@@ -350,7 +400,6 @@ if selected_movie is not None:
                 if show_time
                 else "**상영시간:** 정보 없음"
             )
-
             st.write(f"**관람 등급:** {grade_names}")
             st.write(f"**영화 유형:** {info.get('typeNm') or '정보 없음'}")
 
@@ -370,15 +419,15 @@ if selected_movie is not None:
 
         st.caption("영화 상세 정보 출처: KOBIS")
         if poster_url:
-            st.caption("포스터 이미지 출처: TMDB")
+            st.caption("포스터 출처: TMDB")
 
     except requests.exceptions.RequestException:
-        st.error("영화 정보 요청에 실패했습니다. 잠시 후 다시 시도해 주세요.")
+        st.error("KOBIS 영화 정보 요청에 실패했습니다.")
     except ValueError as error:
-        st.error(f"영화 정보를 처리할 수 없습니다: {error}")
+        st.error(f"영화 정보를 처리하지 못했습니다: {error}")
 
 # ==========================================
-# 박스오피스 순위 화면
+# 박스오피스 화면
 # ==========================================
 else:
     first = df.iloc[0]
@@ -391,7 +440,7 @@ else:
     c3.metric("스크린수", f"{first['scrnCnt']:,}개")
 
     st.subheader("📋 박스오피스 순위")
-    st.caption("아래 영화명을 클릭하면 상세 화면으로 이동합니다.")
+    st.caption("영화명을 클릭하면 상세 정보가 표시됩니다.")
 
     header = st.columns([0.5, 1.0, 2.8, 1.2, 1.2, 1.2, 1.0])
     labels = [
@@ -431,8 +480,7 @@ else:
     st.subheader("📊 관객수 상위 5편")
 
     top5 = df.nlargest(5, "audiCnt").sort_values(
-        "audiCnt",
-        ascending=True,
+        "audiCnt", ascending=True
     )
 
     chart = px.bar(
@@ -460,7 +508,4 @@ else:
     )
 
     st.plotly_chart(chart, use_container_width=True)
-
-    st.caption(
-        "데이터 출처: 영화관입장권통합전산망(KOBIS) 일별 박스오피스 API"
-    )
+    st.caption("데이터 출처: 영화관입장권통합전산망(KOBIS)")
