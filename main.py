@@ -464,18 +464,3 @@ else:
     st.caption(
         "데이터 출처: 영화관입장권통합전산망(KOBIS) 일별 박스오피스 API"
     )
-필요한 설정
-requirements.txt 파일에는 다음 네 가지가 포함되어 있어야 합니다.
-
-
-text
-streamlit
-requests
-pandas
-plotly
-Streamlit Cloud의 Settings → Secrets에는 다음처럼 등록합니다.
-
-
-toml
-KOBIS_KEY = "실제_KOBIS_인증키"
-TMDB_KEY = "실제_TMDB_Read_Access_Token"
