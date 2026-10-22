@@ -1,151 +1,153 @@
-
-# 어제의 박스오피스 — KOBIS 일별 박스오피스 API
-# 초보자 안내:
-# 1. Streamlit Cloud의 Settings > Secrets에 KOBIS_KEY를 등록합니다.
-# 2. 실제 인증키는 코드에 직접 적지 않습니다.
-# 3. requirements.txt에 추가 라이브러리를 적습니다.
-
 import datetime
 import requests
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-st.set_page_config(page_title="어제의 박스오피스", page_icon="🎬", layout="wide")
-
-API_URL = (
-    "https://www.kobis.or.kr/kobisopenapi/webservice/rest/"
-    "boxoffice/searchDailyBoxOfficeList.json"
+st.set_page_config(
+    page_title="어제의 박스오피스",
+    page_icon="🎬",
+    layout="wide",
 )
 
-# 서버 시간대와 관계없이 한국 시간(UTC+9) 기준으로 어제를 계산합니다.
+# ==========================================
+# API 설정
+# ==========================================
+BASE_URL = (
+    "https://www.kobis.or.kr/kobisopenapi/webservice/rest/"
+)
+BOXOFFICE_URL = BASE_URL + "boxoffice/searchDailyBoxOfficeList.json"
+MOVIE_INFO_URL = BASE_URL + "movie/searchMovieInfo.json"
+MOVIE_SEARCH_URL = BASE_URL + "movie/searchMovieList.json"
+TMDB_SEARCH_URL = "https://api.themoviedb.org/3/search/movie"
+
 KST = datetime.timezone(datetime.timedelta(hours=9))
 today_kst = datetime.datetime.now(KST).date()
 yesterday = today_kst - datetime.timedelta(days=1)
 
-st.title("🎬 일별 박스오피스")
-st.caption("달력에서 날짜를 선택하세요. 가장 늦게 선택할 수 있는 날짜는 한국 시간 기준 어제입니다.")
-selected_date = st.date_input(
-    "조회 날짜",
-    value=yesterday,
-    min_value=datetime.date(2004, 1, 1),
-    max_value=yesterday,
-    format="YYYY/MM/DD"
-)
-target_dt = selected_date.strftime("%Y%m%d")
-display_date = selected_date.strftime("%Y년 %m월 %d일")
-
-# 인증키는 Streamlit 비밀 금고(Secrets)에서만 불러옵니다.
-try:
-    API_KEY = st.secrets["KOBIS_KEY"]
-except Exception:
-    st.error("🔐 KOBIS 인증키를 찾을 수 없습니다.")
-    st.markdown(
-        "Streamlit Cloud의 **Settings → Secrets**에 `KOBIS_KEY`가 등록되어 있는지 확인하세요."
-    )
-    st.code('KOBIS_KEY = "발급받은 인증키"', language="toml")
-    st.stop()
-
-
+# ==========================================
+# API 호출 함수
+# ==========================================
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_boxoffice(date_text, api_key):
-    """KOBIS API를 호출해 JSON 응답을 가져옵니다."""
     response = requests.get(
-        API_URL,
+        BOXOFFICE_URL,
         params={"key": api_key, "targetDt": date_text},
-        timeout=20
+        timeout=20,
     )
     response.raise_for_status()
-    return response.json()
+    data = response.json()
 
+    if not isinstance(data, dict):
+        raise ValueError("올바르지 않은 KOBIS 응답입니다.")
 
-# 요청 실패 시 빈 화면 대신 원인과 확인 방법을 표시합니다.
-try:
-    with st.spinner("KOBIS에서 데이터를 불러오는 중입니다..."):
-        data = fetch_boxoffice(target_dt, str(API_KEY).strip())
-except requests.exceptions.Timeout:
-    st.error("⏱️ KOBIS 서버 응답 시간이 초과되었습니다.")
-    st.info("인터넷 연결을 확인하고 잠시 후 새로고침해 주세요.")
-    st.stop()
-except requests.exceptions.HTTPError as error:
-    st.error("🌐 KOBIS 서버가 HTTP 오류를 반환했습니다.")
-    st.write(f"오류 내용: {error}")
-    st.info("KOBIS 서비스 상태와 요청 주소를 확인해 주세요.")
-    st.stop()
-except requests.exceptions.RequestException as error:
-    st.error("🌐 KOBIS 서버에 연결하지 못했습니다.")
-    st.write(f"오류 내용: {error}")
-    st.info("인터넷 연결, 방화벽, KOBIS API 서비스 상태를 확인해 주세요.")
-    st.stop()
-except ValueError:
-    st.error("📦 KOBIS 응답을 JSON으로 읽지 못했습니다.")
-    st.info("잠시 후 다시 시도하거나 KOBIS API 상태를 확인해 주세요.")
-    st.stop()
-except Exception as error:
-    st.error("예상하지 못한 문제가 발생했습니다.")
-    st.write(f"오류 내용: {error}")
-    st.info("앱 설정과 실행 로그를 확인해 주세요.")
-    st.stop()
+    if "faultInfo" in data:
+        raise ValueError(str(data["faultInfo"]))
 
-# 인증키가 틀려도 HTTP 상태코드가 200일 수 있으므로 faultInfo를 확인합니다.
-if not isinstance(data, dict):
-    st.error("KOBIS에서 예상한 형식의 데이터를 받지 못했습니다.")
-    st.info("잠시 후 다시 시도하고 KOBIS API 응답을 확인해 주세요.")
-    st.stop()
-
-if "faultInfo" in data:
-    fault = data.get("faultInfo") or {}
-    if isinstance(fault, dict):
-        code = fault.get("errorCode", "정보 없음")
-        message = fault.get("message", "오류 메시지가 없습니다.")
-    else:
-        code, message = "정보 없음", str(fault)
-    st.error("🚨 KOBIS API가 오류 정보를 반환했습니다.")
-    st.write(f"오류 코드: {code}")
-    st.write(f"오류 메시지: {message}")
-    st.markdown(
-        "**확인할 사항:** Secrets의 이름이 `KOBIS_KEY`인지, 인증키가 올바른지, "
-        "조회 날짜가 `YYYYMMDD` 형식인지 확인하세요."
+    return data.get("boxOfficeResult", {}).get(
+        "dailyBoxOfficeList", []
     )
-    st.stop()
 
-boxoffice_result = data.get("boxOfficeResult", {})
-if not isinstance(boxoffice_result, dict):
-    boxoffice_result = {}
-movies = boxoffice_result.get("dailyBoxOfficeList", [])
 
-if not movies:
-    st.warning("📭 그날은 아직 집계 전입니다.")
-    st.info(
-        "KOBIS에서 해당 날짜의 박스오피스 집계를 완료했는지 확인해 주세요. "
-        "날짜를 다시 선택하거나 잠시 후 새로고침할 수 있습니다."
+@st.cache_data(ttl=3600, show_spinner=False)
+def find_movie_code(movie_name, open_date, api_key):
+    response = requests.get(
+        MOVIE_SEARCH_URL,
+        params={
+            "key": api_key,
+            "movieNm": movie_name,
+            "itemPerPage": 100,
+        },
+        timeout=20,
     )
-    st.stop()
+    response.raise_for_status()
+    data = response.json()
 
-df = pd.DataFrame(movies)
+    if "faultInfo" in data:
+        raise ValueError(str(data["faultInfo"]))
 
-# 필요한 항목이 응답에 있는지 먼저 확인합니다.
-required = ["rank", "rankInten", "movieNm", "openDt", "audiCnt", "audiAcc", "scrnCnt"]
-missing = [column for column in required if column not in df.columns]
-if missing:
-    st.error("KOBIS 응답에 필요한 항목이 없습니다: " + ", ".join(missing))
-    st.info("KOBIS API 응답 구조가 변경되었는지 공식 문서를 확인해 주세요.")
-    st.stop()
+    movies = data.get("movieListResult", {}).get("movieList", [])
 
-# 숫자가 문자열로 오므로 정수로 변환합니다.
-for column in ["rank", "rankInten", "audiCnt", "audiAcc", "scrnCnt"]:
-    df[column] = pd.to_numeric(df[column], errors="coerce").fillna(0).astype(int)
+    # 제목과 개봉일이 모두 일치하는 영화 우선
+    matches = [
+        movie for movie in movies
+        if movie.get("movieNm") == movie_name
+        and movie.get("openDt", "") == open_date
+    ]
 
-df["movieNm"] = df["movieNm"].fillna("영화명 없음").astype(str)
-df["openDt"] = df["openDt"].fillna("-").replace("", "-").astype(str)
+    if matches:
+        return matches[0].get("movieCd")
 
-# 누적 관객수가 100만 명을 초과한 영화명에는 트로피 이모지를 붙입니다.
-df["표시 영화명"] = df.apply(
-    lambda row: f"{row['movieNm']} 🏆" if row["audiAcc"] > 1_000_000 else row["movieNm"],
-    axis=1
-)
+    # 정확한 제목의 결과가 하나뿐일 때만 사용
+    matches = [
+        movie for movie in movies
+        if movie.get("movieNm") == movie_name
+    ]
 
-# 전일 대비 순위 변동: 양수는 상승(빨간 ↑), 음수는 하락(파란 ↓)입니다.
+    if len(matches) == 1:
+        return matches[0].get("movieCd")
+
+    return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_movie_info(movie_code, api_key):
+    response = requests.get(
+        MOVIE_INFO_URL,
+        params={"key": api_key, "movieCd": movie_code},
+        timeout=20,
+    )
+    response.raise_for_status()
+    data = response.json()
+
+    if "faultInfo" in data:
+        raise ValueError(str(data["faultInfo"]))
+
+    return data.get("movieInfoResult", {}).get("movieInfo", {})
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_movie_poster(movie_name, release_year, tmdb_key):
+    if not tmdb_key:
+        return None
+
+    response = requests.get(
+        TMDB_SEARCH_URL,
+        params={
+            "query": movie_name,
+            "language": "ko-KR",
+            "year": release_year or None,
+        },
+        headers={
+            "Authorization": f"Bearer {tmdb_key}",
+            "accept": "application/json",
+        },
+        timeout=20,
+    )
+    response.raise_for_status()
+    results = response.json().get("results", [])
+
+    # 포스터가 있는 첫 번째 검색 결과
+    movie = next(
+        (item for item in results if item.get("poster_path")),
+        None,
+    )
+
+    if not movie:
+        return None
+
+    return "https://image.tmdb.org/t/p/w500" + movie["poster_path"]
+
+
+def format_release_date(value):
+    value = str(value or "")
+
+    if len(value) == 8 and value.isdigit():
+        return f"{value[:4]}년 {value[4:6]}월 {value[6:8]}일"
+
+    return value or "정보 없음"
+
+
 def format_rank_change(value):
     if value > 0:
         return f"↑ {value}"
@@ -153,55 +155,327 @@ def format_rank_change(value):
         return f"↓ {abs(value)}"
     return "— 0"
 
+
+def join_names(items, key):
+    return ", ".join(
+        item.get(key, "")
+        for item in items
+        if item.get(key)
+    ) or "정보 없음"
+
+
+# ==========================================
+# Secrets 확인
+# ==========================================
+try:
+    API_KEY = str(st.secrets["KOBIS_KEY"]).strip()
+except Exception:
+    st.error("KOBIS 인증키가 없습니다.")
+    st.info(
+        "Streamlit Cloud → Settings → Secrets에서 "
+        "KOBIS_KEY를 등록하세요."
+    )
+    st.code('KOBIS_KEY = "발급받은_KOBIS_인증키"', language="toml")
+    st.stop()
+
+TMDB_KEY = str(st.secrets.get("TMDB_KEY", "")).strip()
+
+# ==========================================
+# 날짜 선택
+# ==========================================
+st.title("🎬 일별 박스오피스")
+st.caption(
+    "날짜를 선택하고 영화명을 누르면 영화 상세 정보를 확인할 수 있습니다."
+)
+
+selected_date = st.date_input(
+    "조회 날짜",
+    value=yesterday,
+    min_value=datetime.date(2004, 1, 1),
+    max_value=yesterday,
+    format="YYYY/MM/DD",
+)
+
+target_dt = selected_date.strftime("%Y%m%d")
+display_date = selected_date.strftime("%Y년 %m월 %d일")
+
+# ==========================================
+# 박스오피스 데이터 가져오기
+# ==========================================
+try:
+    with st.spinner("박스오피스를 불러오는 중입니다..."):
+        movies = fetch_boxoffice(target_dt, API_KEY)
+except requests.exceptions.Timeout:
+    st.error("KOBIS 서버 응답 시간이 초과되었습니다.")
+    st.stop()
+except requests.exceptions.RequestException as error:
+    st.error(f"KOBIS 서버 연결 오류: {error}")
+    st.stop()
+except ValueError as error:
+    st.error(f"KOBIS API 오류: {error}")
+    st.stop()
+
+if not movies:
+    st.warning("해당 날짜의 박스오피스 데이터가 없습니다.")
+    st.stop()
+
+df = pd.DataFrame(movies)
+
+required = [
+    "rank", "rankInten", "movieNm", "openDt",
+    "audiCnt", "audiAcc", "scrnCnt",
+]
+missing = [col for col in required if col not in df.columns]
+
+if missing:
+    st.error("필요한 데이터가 없습니다: " + ", ".join(missing))
+    st.stop()
+
+# 숫자 데이터 정리
+for col in ["rank", "rankInten", "audiCnt", "audiAcc", "scrnCnt"]:
+    df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+
+df["movieNm"] = df["movieNm"].fillna("영화명 없음").astype(str)
+df["openDt"] = df["openDt"].fillna("").astype(str)
+df["표시 영화명"] = df.apply(
+    lambda row: (
+        f"{row['movieNm']} 🏆"
+        if row["audiAcc"] > 1_000_000
+        else row["movieNm"]
+    ),
+    axis=1,
+)
 df["순위 변동"] = df["rankInten"].map(format_rank_change)
 df = df.sort_values("rank").reset_index(drop=True)
 
-# 1위 영화의 주요 지표 세 가지를 크게 보여 줍니다.
-first = df.iloc[0]
-st.subheader(f"🥇 {display_date} 1위 — {first['표시 영화명']}")
-c1, c2, c3 = st.columns(3)
-c1.metric("관객수", f"{first['audiCnt']:,}명")
-c2.metric("누적 관객수", f"{first['audiAcc']:,}명")
-c3.metric("스크린수", f"{first['scrnCnt']:,}개")
+# ==========================================
+# 화면 상태
+# ==========================================
+if "selected_movie" not in st.session_state:
+    st.session_state["selected_movie"] = None
 
-# 순위 변동을 색으로 구분해 표에 표시합니다.
-st.subheader("📋 박스오피스 순위")
-table = df[["rank", "순위 변동", "표시 영화명", "openDt", "audiCnt", "audiAcc", "scrnCnt"]].copy()
-table.columns = ["순위", "전일 대비", "영화명", "개봉일", "관객수", "누적관객", "스크린수"]
-for column in ["관객수", "누적관객", "스크린수"]:
-    table[column] = table[column].map(lambda value: f"{value:,}")
+selected_movie = st.session_state["selected_movie"]
 
-def color_rank_change(value):
-    if isinstance(value, str) and value.startswith("↑"):
-        return "color: #e53935; font-weight: bold;"
-    if isinstance(value, str) and value.startswith("↓"):
-        return "color: #1976d2; font-weight: bold;"
-    return "color: #777777;"
+# ==========================================
+# 영화 상세 화면
+# ==========================================
+if selected_movie is not None:
+    if st.button("← 박스오피스로 돌아가기"):
+        st.session_state["selected_movie"] = None
+        st.rerun()
 
-st.dataframe(
-    table.style.map(color_rank_change, subset=["전일 대비"]),
-    hide_index=True,
-    use_container_width=True
-)
+    movie_name = selected_movie["movieNm"]
+    movie_code = selected_movie.get("movieCd")
+    open_date = str(selected_movie.get("openDt", ""))
 
-# 관객수 상위 5편을 막대그래프로 표시합니다.
-st.subheader("📊 관객수 상위 5편")
-top5 = df.nlargest(5, "audiCnt").sort_values("audiCnt", ascending=True)
-chart = px.bar(
-    top5,
-    x="audiCnt",
-    y="표시 영화명",
-    orientation="h",
-    labels={"audiCnt": "관객수(명)", "표시 영화명": "영화명"},
-    text="audiCnt"
-)
-chart.update_traces(texttemplate="%{text:,}", textposition="outside", cliponaxis=False)
-chart.update_layout(
-    yaxis_title="",
-    xaxis_title="관객수(명)",
-    margin=dict(l=10, r=40, t=20, b=10)
-)
-st.plotly_chart(chart, use_container_width=True)
+    st.title(f"🎬 {movie_name}")
+    st.caption("영화 상세 정보")
 
-st.caption("데이터 출처: 영화관입장권통합전산망(KOBIS) 일별 박스오피스 API")
-  
+    try:
+        with st.spinner("영화 정보를 불러오는 중입니다..."):
+            if not movie_code:
+                movie_code = find_movie_code(
+                    movie_name,
+                    open_date,
+                    API_KEY,
+                )
+
+            if not movie_code:
+                st.warning(
+                    "일치하는 영화 코드를 찾지 못했습니다. "
+                    "KOBIS 영화 검색 결과를 확인해 주세요."
+                )
+                st.stop()
+
+            info = fetch_movie_info(movie_code, API_KEY)
+
+            if not info:
+                st.warning("영화 상세 정보가 없습니다.")
+                st.stop()
+
+            directors = info.get("directors") or []
+            actors = info.get("actors") or []
+            genres = info.get("genres") or []
+            nations = info.get("nations") or []
+            audits = info.get("audits") or []
+
+            director_names = join_names(directors, "peopleNm")
+            actor_names = join_names(actors[:10], "peopleNm")
+            genre_names = join_names(genres, "genreNm")
+            nation_names = join_names(nations, "nationNm")
+            grade_names = join_names(audits, "watchGradeNm")
+
+            raw_date = info.get("openDt") or open_date
+            release_date = format_release_date(raw_date)
+
+            # 포스터 조회는 선택 사항
+            poster_url = None
+
+            if TMDB_KEY:
+                try:
+                    poster_url = fetch_movie_poster(
+                        info.get("movieNm") or movie_name,
+                        raw_date[:4] if len(raw_date) >= 4 else "",
+                        TMDB_KEY,
+                    )
+                except (
+                    requests.exceptions.RequestException,
+                    ValueError,
+                ):
+                    poster_url = None
+
+        poster_col, detail_col = st.columns([1, 2])
+
+        with poster_col:
+            if poster_url:
+                st.image(poster_url, use_container_width=True)
+            else:
+                st.info(
+                    "포스터가 없습니다. "
+                    "TMDB_KEY 등록 여부를 확인해 주세요."
+                )
+
+        with detail_col:
+            st.subheader(info.get("movieNm") or movie_name)
+            st.write(f"**영문 제목:** {info.get('movieNmEn') or '정보 없음'}")
+            st.write(f"**개봉일:** {release_date}")
+            st.write(f"**감독:** {director_names}")
+            st.write(f"**출연 배우:** {actor_names}")
+            st.write(f"**장르:** {genre_names}")
+            st.write(f"**제작 국가:** {nation_names}")
+
+            show_time = info.get("showTm")
+            st.write(
+                f"**상영시간:** {show_time}분"
+                if show_time
+                else "**상영시간:** 정보 없음"
+            )
+
+            st.write(f"**관람 등급:** {grade_names}")
+            st.write(f"**영화 유형:** {info.get('typeNm') or '정보 없음'}")
+
+        st.divider()
+        st.subheader(f"📊 {display_date} 박스오피스 성적")
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("순위", f"{selected_movie.get('rank', '-')}위")
+        c2.metric(
+            "당일 관객수",
+            f"{int(selected_movie.get('audiCnt', 0)):,}명",
+        )
+        c3.metric(
+            "누적 관객수",
+            f"{int(selected_movie.get('audiAcc', 0)):,}명",
+        )
+
+        st.caption("영화 상세 정보 출처: KOBIS")
+        if poster_url:
+            st.caption("포스터 이미지 출처: TMDB")
+
+    except requests.exceptions.RequestException:
+        st.error("영화 정보 요청에 실패했습니다. 잠시 후 다시 시도해 주세요.")
+    except ValueError as error:
+        st.error(f"영화 정보를 처리할 수 없습니다: {error}")
+
+# ==========================================
+# 박스오피스 순위 화면
+# ==========================================
+else:
+    first = df.iloc[0]
+
+    st.subheader(f"🥇 {display_date} 1위 — {first['표시 영화명']}")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("관객수", f"{first['audiCnt']:,}명")
+    c2.metric("누적 관객수", f"{first['audiAcc']:,}명")
+    c3.metric("스크린수", f"{first['scrnCnt']:,}개")
+
+    st.subheader("📋 박스오피스 순위")
+    st.caption("아래 영화명을 클릭하면 상세 화면으로 이동합니다.")
+
+    header = st.columns([0.5, 1.0, 2.8, 1.2, 1.2, 1.2, 1.0])
+    labels = [
+        "순위", "전일 대비", "영화명",
+        "개봉일", "관객수", "누적관객", "스크린수",
+    ]
+
+    for col, label in zip(header, labels):
+        col.markdown(f"**{label}**")
+
+    for _, row in df.iterrows():
+        cols = st.columns([0.5, 1.0, 2.8, 1.2, 1.2, 1.2, 1.0])
+
+        cols[0].write(int(row["rank"]))
+
+        change = row["순위 변동"]
+        if change.startswith("↑"):
+            cols[1].markdown(f":red[**{change}**]")
+        elif change.startswith("↓"):
+            cols[1].markdown(f":blue[**{change}**]")
+        else:
+            cols[1].write(change)
+
+        if cols[2].button(
+            str(row["표시 영화명"]),
+            key=f"movie_{target_dt}_{row['rank']}",
+            use_container_width=True,
+        ):
+            st.session_state["selected_movie"] = row.to_dict()
+            st.rerun()
+
+        cols[3].write(row["openDt"] or "-")
+        cols[4].write(f"{row['audiCnt']:,}")
+        cols[5].write(f"{row['audiAcc']:,}")
+        cols[6].write(f"{row['scrnCnt']:,}")
+
+    st.subheader("📊 관객수 상위 5편")
+
+    top5 = df.nlargest(5, "audiCnt").sort_values(
+        "audiCnt",
+        ascending=True,
+    )
+
+    chart = px.bar(
+        top5,
+        x="audiCnt",
+        y="표시 영화명",
+        orientation="h",
+        labels={
+            "audiCnt": "관객수(명)",
+            "표시 영화명": "영화명",
+        },
+        text="audiCnt",
+    )
+
+    chart.update_traces(
+        texttemplate="%{text:,}",
+        textposition="outside",
+        cliponaxis=False,
+    )
+
+    chart.update_layout(
+        yaxis_title="",
+        xaxis_title="관객수(명)",
+        margin=dict(l=10, r=40, t=20, b=10),
+    )
+
+    st.plotly_chart(chart, use_container_width=True)
+
+    st.caption(
+        "데이터 출처: 영화관입장권통합전산망(KOBIS) 일별 박스오피스 API"
+    )
+필요한 설정
+requirements.txt 파일에는 다음 네 가지가 포함되어 있어야 합니다.
+
+
+text
+streamlit
+requests
+pandas
+plotly
+Streamlit Cloud의 Settings → Secrets에는 다음처럼 등록합니다.
+
+
+toml
+KOBIS_KEY = "실제_KOBIS_인증키"
+TMDB_KEY = "실제_TMDB_Read_Access_Token"
